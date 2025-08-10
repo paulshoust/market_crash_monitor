@@ -12,7 +12,7 @@ jobs:
       contents: read
       packages: write
     env:
-      IMAGE_NAME: paulsh1988/market_crash_monitor
+      IMAGE_NAME: paulshoust/market_crash_monitor
 
     steps:
       - name: Checkout
@@ -60,71 +60,74 @@ jobs:
           cache-from: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache
           cache-to: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache,mode=max
 
-  deploy:
-    needs: build_publish
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
-    steps:
-      - name: Checkout (for docker-compose.yml)
-        uses: actions/checkout@v4
+deploy:
+  needs: build_publish
+  runs-on: ubuntu-latest
+  if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+  steps:
+    - name: Write .env from secrets + deploy (server has compose file already)
+      uses: appleboy/ssh-action@v1.2.0
+      env:
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_MARKET_MONITOR }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID_MARKET_MONITOR }}
+        FRED_API_KEY: ${{ secrets.FRED_API_KEY_MARKET_MONITOR }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY_MARKET_MONITOR }}
+        PORTFOLIO_VALUE: ${{ secrets.PORTFOLIO_VALUE_MARKET_MONITOR }}
+        ALERT_SEND_POLICY: ${{ secrets.ALERT_SEND_POLICY_MARKET_MONITOR }}
+        SCHEDULE_CRON: "0 17 * * 1"        # Mondays 17:00 Europe/Madrid
+        TZ: "Europe/Madrid"
+        DEPLOY_DIR: "/market_crash_monitor"
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        envs: TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,FRED_API_KEY,OPENAI_API_KEY,PORTFOLIO_VALUE,ALERT_SEND_POLICY,SCHEDULE_CRON,TZ,DEPLOY_DIR
+        script: |
+          set -euo pipefail
 
-      - name: Copy compose to server
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          source: "docker-compose.yml"
-          target: "/opt/market_crash_monitor"
-          strip_components: 0
+          # sanity: ensure the folder with docker-compose.yml exists
+          if [ ! -d "$DEPLOY_DIR" ] || [ ! -f "$DEPLOY_DIR/docker-compose.yml" ]; then
+            echo "ERROR: $DEPLOY_DIR or docker-compose.yml missing on server" >&2
+            exit 1
+          fi
 
-      - name: Create/Update .env on server from GitHub Secrets and deploy
-        uses: appleboy/ssh-action@v1.2.0
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_MARKET_MONITOR }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID_MARKET_MONITOR }}
-          FRED_API_KEY: ${{ secrets.FRED_API_KEY_MARKET_MONITOR }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY_MARKET_MONITOR }}
-          PORTFOLIO_VALUE: ${{ secrets.PORTFOLIO_VALUE_MARKET_MONITOR }}
-          ALERT_SEND_POLICY: ${{ secrets.ALERT_SEND_POLICY_MARKET_MONITOR }}
-          SCHEDULE_CRON: "0 17 * * 1"        # Mondays 17:00 Madrid
-          TZ: "Europe/Madrid"
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          envs: TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,FRED_API_KEY,OPENAI_API_KEY,PORTFOLIO_VALUE,ALERT_SEND_POLICY,SCHEDULE_CRON,TZ
-          script: |
-            set -euo pipefail
-            sudo mkdir -p /opt/market_crash_monitor/data
-            sudo chown -R $USER:$USER /opt/market_crash_monitor
-            cd /opt/market_crash_monitor
+          cd "$DEPLOY_DIR"
 
-            umask 077
-            TMP_ENV=".env.$$"
-            {
-              echo "ALERT_CHANNELS=telegram,stdout"
-              echo "ALERT_SEND_POLICY=${ALERT_SEND_POLICY:-smart}"
-              echo "WEEKLY_DAY=4"
-              echo "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}"
-              echo "TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}"
-              echo "FRED_API_KEY=${FRED_API_KEY}"
-              echo "LLM_SUMMARY=true"
-              echo "OPENAI_API_KEY=${OPENAI_API_KEY}"
-              if [ -n "${PORTFOLIO_VALUE:-}" ]; then
-                echo "PORTFOLIO_VALUE=${PORTFOLIO_VALUE}"
-              fi
-              echo "CRASH_DASHBOARD_DATA_DIR=/data"
-              echo "DATA_DIR=/data"
-              echo "TZ=${TZ}"
-              echo "SCHEDULE_CRON=${SCHEDULE_CRON}"
-              echo "RUN_AT_START=0"
-              echo "HEALTH_HTTP=1"
-              echo "HEALTH_PORT=8087"
-              echo "HEALTH_MAX_AGE_MIN=180"
-            } > "${TMP_ENV}"
-            mv -f "${TMP_ENV}" .env
+          # Rebuild .env from GitHub Secrets each deploy (idempotent)
+          umask 077
+          TMP_ENV=".env.$$"
+          {
+            echo "ALERT_CHANNELS=telegram,stdout"
+            echo "ALERT_SEND_POLICY=${ALERT_SEND_POLICY:-smart}"
+            echo "WEEKLY_DAY=4"
+            echo "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}"
+            echo "TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}"
+            echo "FRED_API_KEY=${FRED_API_KEY}"
+            echo "LLM_SUMMARY=true"
+            echo "OPENAI_API_KEY=${OPENAI_API_KEY}"
+            if [ -n "${PORTFOLIO_VALUE:-}" ]; then
+              echo "PORTFOLIO_VALUE=${PORTFOLIO_VALUE}"
+            fi
+            echo "CRASH_DASHBOARD_DATA_DIR=/data"
+            echo "DATA_DIR=/data"
+            echo "TZ=${TZ}"
+            echo "SCHEDULE_CRON=${SCHEDULE_CRON}"
+            echo "RUN_AT_START=0"
+            echo "HEALTH_HTTP=1"
+            echo "HEALTH_PORT=8087"
+            echo "HEALTH_MAX_AGE_MIN=180"
+          } > "${TMP_ENV}"
+          mv -f "${TMP_ENV}" .env
 
-            docker compose pull
-            docker compose up -d
-            docker compose ps
+          mkdir -p data
+
+          # compose v2 or fallback
+          if docker compose version >/dev/null 2>&1; then
+            DC="docker compose"
+          else
+            DC="docker-compose"
+          fi
+
+          $DC pull
+          $DC up -d
+          $DC ps

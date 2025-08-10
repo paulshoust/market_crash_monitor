@@ -1,9 +1,13 @@
 name: Build, Test, Publish, Deploy
 
+env:
+  IMAGE_NAME: docker.io/paulsh1988/market_crash_monitor
+
 on:
   push:
     branches: [ "main" ]
-    tags:     [ "v*" ]
+    tags:
+      - "v*"
 
 jobs:
   build_publish:
@@ -11,9 +15,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-    env:
-      IMAGE_NAME: docker.io/paulsh1988/market_crash_monitor
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -43,8 +44,9 @@ jobs:
 
       - name: Show tags we will build/push
         run: |
-          echo "Resolved tags:"
-          echo "${{ steps.meta.outputs.tags }}"
+          echo "IMAGE_NAME=${{ env.IMAGE_NAME }}"
+          printf "%s
+" "${{ steps.meta.outputs.tags }}"
 
       # Build a local amd64 image and load into the runner for smoke testing
       - name: Build (local amd64, load)
@@ -56,6 +58,15 @@ jobs:
           platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
 
+      # Optional smoke test: LLM self-check using your OpenAI key
+      - name: LLM smoke test
+        run: |
+          set -e
+          IMG="$(echo "${{ steps.meta.outputs.tags }}" | head -n1)"
+          docker run --rm \
+            -e OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY_MARKET_MONITOR }} \
+            "$IMG" python /market_monitor/market_monitor.py --llm-test
+        continue-on-error: true
 
       # Build and push multi-arch
       - name: Build and push (multi-arch)
@@ -66,76 +77,76 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=registry,ref=${{ secrets.IMAGE_NAME }}:buildcache
-          cache-to: type=registry,ref=${{ secrets.IMAGE_NAME }}:buildcache,mode=max
+          cache-from: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache,mode=max
 
-deploy:
+  deploy:
     needs: build_publish
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags v')
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
     steps:
-        - name: Write .env from secrets + deploy (server already has compose file)
+      - name: Write .env from secrets + deploy (server already has compose file)
         uses: appleboy/ssh-action@v1.2.0
         env:
-            TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_MARKET_MONITOR }}
-            TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID_MARKET_MONITOR }}
-            FRED_API_KEY: ${{ secrets.FRED_API_KEY_MARKET_MONITOR }}
-            OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY_MARKET_MONITOR }}
-            PORTFOLIO_VALUE: ${{ secrets.PORTFOLIO_VALUE_MARKET_MONITOR }}
-            ALERT_SEND_POLICY: ${{ secrets.ALERT_SEND_POLICY_MARKET_MONITOR }}
-            SCHEDULE_CRON: "0 17 * * 1"
-            TZ: "Europe/Madrid"
-            DEPLOY_DIR: "/home/${{ secrets.SERVER_USER }}/market_monitor"
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_MARKET_MONITOR }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID_MARKET_MONITOR }}
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY_MARKET_MONITOR }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY_MARKET_MONITOR }}
+          PORTFOLIO_VALUE: ${{ secrets.PORTFOLIO_VALUE_MARKET_MONITOR }}
+          ALERT_SEND_POLICY: ${{ secrets.ALERT_SEND_POLICY_MARKET_MONITOR }}
+          SCHEDULE_CRON: "0 17 * * 1"        # Mondays 17:00 Europe/Madrid
+          TZ: "Europe/Madrid"
+          DEPLOY_DIR: "/home/${{ secrets.SERVER_USER }}/market_monitor"
         with:
-            host: ${{ secrets.SERVER_HOST }}
-            username: ${{ secrets.SERVER_USER }}
-            key: ${{ secrets.SSH_KEY }}
-            envs: TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,FRED_API_KEY,OPENAI_API_KEY,PORTFOLIO_VALUE,ALERT_SEND_POLICY,SCHEDULE_CRON,TZ,DEPLOY_DIR
-            script: |
-                set -euo pipefail
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          envs: TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,FRED_API_KEY,OPENAI_API_KEY,PORTFOLIO_VALUE,ALERT_SEND_POLICY,SCHEDULE_CRON,TZ,DEPLOY_DIR
+          script: |
+            set -euo pipefail
 
-                echo "Using DEPLOY_DIR=$DEPLOY_DIR"
-                if [ ! -d "$DEPLOY_DIR" ] || [ ! -f "$DEPLOY_DIR/docker-compose.yml" ]; then
-                    echo "ERROR: $DEPLOY_DIR or docker-compose.yml missing on server" >&2
-                    ls -la "$DEPLOY_DIR" || true
-                    exit 1
-                fi
+            echo "Using DEPLOY_DIR=$DEPLOY_DIR"
+            if [ ! -d "$DEPLOY_DIR" ] || [ ! -f "$DEPLOY_DIR/docker-compose.yml" ]; then
+              echo "ERROR: $DEPLOY_DIR or docker-compose.yml missing on server" >&2
+              ls -la "$DEPLOY_DIR" || true
+              exit 1
+            fi
 
-                cd "$DEPLOY_DIR"
+            cd "$DEPLOY_DIR"
 
-                umask 077
-                TMP_ENV=".env.$$"
-                {
-                    echo "ALERT_CHANNELS=telegram,stdout"
-                    echo "ALERT_SEND_POLICY=${ALERT_SEND_POLICY:-smart}"
-                    echo "WEEKLY_DAY=4"
-                    echo "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}"
-                    echo "TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}"
-                    echo "FRED_API_KEY=${FRED_API_KEY}"
-                    echo "LLM_SUMMARY=true"
-                    echo "OPENAI_API_KEY=${OPENAI_API_KEY}"
-                    if [ -n "${PORTFOLIO_VALUE:-}" ]; then
-                    echo "PORTFOLIO_VALUE=${PORTFOLIO_VALUE}"
-                    fi
-                    echo "CRASH_DASHBOARD_DATA_DIR=/data"
-                    echo "DATA_DIR=/data"
-                    echo "TZ=${TZ}"
-                    echo "SCHEDULE_CRON=${SCHEDULE_CRON}"
-                    echo "RUN_AT_START=0"
-                    echo "HEALTH_HTTP=1"
-                    echo "HEALTH_PORT=8087"
-                    echo "HEALTH_MAX_AGE_MIN=180"
-                } > "${TMP_ENV}"
-                mv -f "${TMP_ENV}" .env
+            umask 077
+            TMP_ENV=".env.$$"
+            {
+              echo "ALERT_CHANNELS=telegram,stdout"
+              echo "ALERT_SEND_POLICY=${ALERT_SEND_POLICY:-smart}"
+              echo "WEEKLY_DAY=4"
+              echo "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}"
+              echo "TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}"
+              echo "FRED_API_KEY=${FRED_API_KEY}"
+              echo "LLM_SUMMARY=true"
+              echo "OPENAI_API_KEY=${OPENAI_API_KEY}"
+              if [ -n "${PORTFOLIO_VALUE:-}" ]; then
+                echo "PORTFOLIO_VALUE=${PORTFOLIO_VALUE}"
+              fi
+              echo "CRASH_DASHBOARD_DATA_DIR=/data"
+              echo "DATA_DIR=/data"
+              echo "TZ=${TZ}"
+              echo "SCHEDULE_CRON=${SCHEDULE_CRON}"
+              echo "RUN_AT_START=0"
+              echo "HEALTH_HTTP=1"
+              echo "HEALTH_PORT=8087"
+              echo "HEALTH_MAX_AGE_MIN=180"
+            } > "${TMP_ENV}"
+            mv -f "${TMP_ENV}" .env
 
-                mkdir -p data
+            mkdir -p data
 
-                if docker compose version >/dev/null 2>&1; then
-                    DC="docker compose"
-                else
-                    DC="docker-compose"
-                fi
+            if docker compose version >/dev/null 2>&1; then
+              DC="docker compose"
+            else
+              DC="docker-compose"
+            fi
 
-                $DC pull
-                $DC up -d
-                $DC ps
+            $DC pull
+            $DC up -d
+            $DC ps

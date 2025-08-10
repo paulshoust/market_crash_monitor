@@ -1,0 +1,20 @@
+{
+  "date": "2021-12-01",
+  "spx": 4513.0400390625,
+  "gold": 1781.5999755859375,
+  "vix": 31.1200008392334,
+  "drawdown_spx": -0.29370853328558855,
+  "gold_spx_ratio_6m_change": null,
+  "yield_curve_10y_3m": 0.0137,
+  "curve_steepening_vs_min": 0.0137,
+  "baa10y_spread": 0.0184,
+  "ted_spread": 0.0011,
+  "ipman_yoy": 0.0095006175401402,
+  "neworder_yoy": 0.025603720221907933,
+  "cfnai_3mo": 0.63,
+  "rotation_checks": {
+    "GNR": 43.82347869873047,
+    "XLU": 58.70774459838867,
+    "INDA": 44.3314323425293
+  }
+}

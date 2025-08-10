@@ -45,8 +45,7 @@ jobs:
       - name: Show tags we will build/push
         run: |
           echo "IMAGE_NAME=${{ env.IMAGE_NAME }}"
-          printf "%s
-" "${{ steps.meta.outputs.tags }}"
+          printf "%s" "${{ steps.meta.outputs.tags }}"
 
       # Build a local amd64 image and load into the runner for smoke testing
       - name: Build (local amd64, load)

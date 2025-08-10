@@ -1,0 +1,19 @@
+services:
+  market-crash-monitor:
+    image: docker.io/paulsh1988/market_crash_monitor:latest
+    container_name: market-crash-monitor
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+      TZ: Europe/Madrid
+      # Weekly Monday 17:00 Madrid (cron)
+      SCHEDULE_CRON: ${SCHEDULE_CRON:-0 17 * * 1}
+      RUN_AT_START: ${RUN_AT_START:-0}
+      HEALTH_HTTP: ${HEALTH_HTTP:-1}
+      HEALTH_PORT: ${HEALTH_PORT:-8087}
+      HEALTH_MAX_AGE_MIN: ${HEALTH_MAX_AGE_MIN:-180}
+    volumes:
+      - ./data:/data
+    ports:
+      - "8087:8087"   # /healthz

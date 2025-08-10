@@ -12,7 +12,7 @@ jobs:
       contents: read
       packages: write
     env:
-      IMAGE_NAME: paulshoust/market_crash_monitor
+      IMAGE_NAME: docker.io/paulshoust/market_crash_monitor
 
     steps:
       - name: Checkout
@@ -27,6 +27,7 @@ jobs:
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
+          registry: docker.io
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
@@ -40,16 +41,33 @@ jobs:
             type=ref,event=tag
             type=sha
 
-      - name: Build image (no push yet)
+      - name: Show tags we will build/push
+        run: |
+          echo "Resolved tags:"
+          echo "${{ steps.meta.outputs.tags }}"
+
+      # Build a local amd64 image and load into the runner's Docker for smoke testing
+      - name: Build (local amd64, load)
         uses: docker/build-push-action@v6
         with:
           context: .
           push: false
-          platforms: linux/amd64,linux/arm64
+          load: true
+          platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
 
+      # Optional smoke test: run the LLM self-check using your OpenAI key
+      - name: LLM smoke test
+        run: |
+          set -e
+          IMG="$(echo "${{ steps.meta.outputs.tags }}" | head -n1)"
+          docker run --rm \
+            -e OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY_MARKET_MONITOR }} \
+            "$IMG" python /market_monitor/market_monitor.py --llm-test
+        continue-on-error: true
 
-      - name: Push image
+      # Build and push multi-arch
+      - name: Build and push (multi-arch)
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -60,74 +78,74 @@ jobs:
           cache-from: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache
           cache-to: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache,mode=max
 
-deploy:
-  needs: build_publish
-  runs-on: ubuntu-latest
-  if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
-  steps:
-    - name: Write .env from secrets + deploy (server has compose file already)
-      uses: appleboy/ssh-action@v1.2.0
-      env:
-        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_MARKET_MONITOR }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID_MARKET_MONITOR }}
-        FRED_API_KEY: ${{ secrets.FRED_API_KEY_MARKET_MONITOR }}
-        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY_MARKET_MONITOR }}
-        PORTFOLIO_VALUE: ${{ secrets.PORTFOLIO_VALUE_MARKET_MONITOR }}
-        ALERT_SEND_POLICY: ${{ secrets.ALERT_SEND_POLICY_MARKET_MONITOR }}
-        SCHEDULE_CRON: "0 17 * * 1"        # Mondays 17:00 Europe/Madrid
-        TZ: "Europe/Madrid"
-        DEPLOY_DIR: "/market_crash_monitor"
-      with:
-        host: ${{ secrets.SERVER_HOST }}
-        username: ${{ secrets.SERVER_USER }}
-        key: ${{ secrets.SSH_KEY }}
-        envs: TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,FRED_API_KEY,OPENAI_API_KEY,PORTFOLIO_VALUE,ALERT_SEND_POLICY,SCHEDULE_CRON,TZ,DEPLOY_DIR
-        script: |
-          set -euo pipefail
+  deploy:
+    needs: build_publish
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Write .env from secrets + deploy (server already has compose file)
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_MARKET_MONITOR }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID_MARKET_MONITOR }}
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY_MARKET_MONITOR }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY_MARKET_MONITOR }}
+          PORTFOLIO_VALUE: ${{ secrets.PORTFOLIO_VALUE_MARKET_MONITOR }}
+          ALERT_SEND_POLICY: ${{ secrets.ALERT_SEND_POLICY_MARKET_MONITOR }}
+          SCHEDULE_CRON: "0 17 * * 1"        # Mondays 17:00 Europe/Madrid
+          TZ: "Europe/Madrid"
+          DEPLOY_DIR: "/market_crash_monitor"
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          envs: TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,FRED_API_KEY,OPENAI_API_KEY,PORTFOLIO_VALUE,ALERT_SEND_POLICY,SCHEDULE_CRON,TZ,DEPLOY_DIR
+          script: |
+            set -euo pipefail
 
-          # sanity: ensure the folder with docker-compose.yml exists
-          if [ ! -d "$DEPLOY_DIR" ] || [ ! -f "$DEPLOY_DIR/docker-compose.yml" ]; then
-            echo "ERROR: $DEPLOY_DIR or docker-compose.yml missing on server" >&2
-            exit 1
-          fi
-
-          cd "$DEPLOY_DIR"
-
-          # Rebuild .env from GitHub Secrets each deploy (idempotent)
-          umask 077
-          TMP_ENV=".env.$$"
-          {
-            echo "ALERT_CHANNELS=telegram,stdout"
-            echo "ALERT_SEND_POLICY=${ALERT_SEND_POLICY:-smart}"
-            echo "WEEKLY_DAY=4"
-            echo "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}"
-            echo "TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}"
-            echo "FRED_API_KEY=${FRED_API_KEY}"
-            echo "LLM_SUMMARY=true"
-            echo "OPENAI_API_KEY=${OPENAI_API_KEY}"
-            if [ -n "${PORTFOLIO_VALUE:-}" ]; then
-              echo "PORTFOLIO_VALUE=${PORTFOLIO_VALUE}"
+            # sanity: ensure the folder with docker-compose.yml exists
+            if [ ! -d "$DEPLOY_DIR" ] || [ ! -f "$DEPLOY_DIR/docker-compose.yml" ]; then
+              echo "ERROR: $DEPLOY_DIR or docker-compose.yml missing on server" >&2
+              exit 1
             fi
-            echo "CRASH_DASHBOARD_DATA_DIR=/data"
-            echo "DATA_DIR=/data"
-            echo "TZ=${TZ}"
-            echo "SCHEDULE_CRON=${SCHEDULE_CRON}"
-            echo "RUN_AT_START=0"
-            echo "HEALTH_HTTP=1"
-            echo "HEALTH_PORT=8087"
-            echo "HEALTH_MAX_AGE_MIN=180"
-          } > "${TMP_ENV}"
-          mv -f "${TMP_ENV}" .env
 
-          mkdir -p data
+            cd "$DEPLOY_DIR"
 
-          # compose v2 or fallback
-          if docker compose version >/dev/null 2>&1; then
-            DC="docker compose"
-          else
-            DC="docker-compose"
-          fi
+            # Rebuild .env from GitHub Secrets each deploy (idempotent)
+            umask 077
+            TMP_ENV=".env.$$"
+            {
+              echo "ALERT_CHANNELS=telegram,stdout"
+              echo "ALERT_SEND_POLICY=${ALERT_SEND_POLICY:-smart}"
+              echo "WEEKLY_DAY=4"
+              echo "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}"
+              echo "TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}"
+              echo "FRED_API_KEY=${FRED_API_KEY}"
+              echo "LLM_SUMMARY=true"
+              echo "OPENAI_API_KEY=${OPENAI_API_KEY}"
+              if [ -n "${PORTFOLIO_VALUE:-}" ]; then
+                echo "PORTFOLIO_VALUE=${PORTFOLIO_VALUE}"
+              fi
+              echo "CRASH_DASHBOARD_DATA_DIR=/data"
+              echo "DATA_DIR=/data"
+              echo "TZ=${TZ}"
+              echo "SCHEDULE_CRON=${SCHEDULE_CRON}"
+              echo "RUN_AT_START=0"
+              echo "HEALTH_HTTP=1"
+              echo "HEALTH_PORT=8087"
+              echo "HEALTH_MAX_AGE_MIN=180"
+            } > "${TMP_ENV}"
+            mv -f "${TMP_ENV}" .env
 
-          $DC pull
-          $DC up -d
-          $DC ps
+            mkdir -p data
+
+            # compose v2 or fallback
+            if docker compose version >/dev/null 2>&1; then
+              DC="docker compose"
+            else
+              DC="docker-compose"
+            fi
+
+            $DC pull
+            $DC up -d
+            $DC ps

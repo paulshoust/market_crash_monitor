@@ -12,7 +12,7 @@ jobs:
       contents: read
       packages: write
     env:
-      IMAGE_NAME: docker.io/paulshoust/market_crash_monitor
+      IMAGE_NAME: docker.io/paulsh1988/market_crash_monitor
 
     steps:
       - name: Checkout
@@ -46,7 +46,7 @@ jobs:
           echo "Resolved tags:"
           echo "${{ steps.meta.outputs.tags }}"
 
-      # Build a local amd64 image and load into the runner's Docker for smoke testing
+      # Build a local amd64 image and load into the runner for smoke testing
       - name: Build (local amd64, load)
         uses: docker/build-push-action@v6
         with:
@@ -56,7 +56,7 @@ jobs:
           platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
 
-      # Optional smoke test: run the LLM self-check using your OpenAI key
+      # Optional smoke test: LLM self-check using your OpenAI key
       - name: LLM smoke test
         run: |
           set -e
@@ -75,8 +75,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache
-          cache-to: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache,mode=max
+          cache-from: type=registry,ref=${{ secrets.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ secrets.IMAGE_NAME }}:buildcache,mode=max
 
   deploy:
     needs: build_publish
@@ -94,7 +94,7 @@ jobs:
           ALERT_SEND_POLICY: ${{ secrets.ALERT_SEND_POLICY_MARKET_MONITOR }}
           SCHEDULE_CRON: "0 17 * * 1"        # Mondays 17:00 Europe/Madrid
           TZ: "Europe/Madrid"
-          DEPLOY_DIR: "/market_crash_monitor"
+          DEPLOY_DIR: "/market_monitor"
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
@@ -103,9 +103,13 @@ jobs:
           script: |
             set -euo pipefail
 
-            # sanity: ensure the folder with docker-compose.yml exists
+            # Ensure the folder with docker-compose.yml exists and is writable
             if [ ! -d "$DEPLOY_DIR" ] || [ ! -f "$DEPLOY_DIR/docker-compose.yml" ]; then
               echo "ERROR: $DEPLOY_DIR or docker-compose.yml missing on server" >&2
+              exit 1
+            fi
+            if [ ! -w "$DEPLOY_DIR" ]; then
+              echo "ERROR: $DEPLOY_DIR not writable by this SSH user" >&2
               exit 1
             fi
 
@@ -120,6 +124,7 @@ jobs:
               echo "WEEKLY_DAY=4"
               echo "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}"
               echo "TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}"
+              echo "IMAGE_NAME=${IMAGE_NAME}"
               echo "FRED_API_KEY=${FRED_API_KEY}"
               echo "LLM_SUMMARY=true"
               echo "OPENAI_API_KEY=${OPENAI_API_KEY}"

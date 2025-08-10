@@ -1,6 +1,7 @@
 services:
   market-crash-monitor:
-    image: docker.io/paulsh1988/market_crash_monitor:latest
+    image: ${IMAGE_NAME}
+
     container_name: market-crash-monitor
     restart: unless-stopped
     env_file: .env

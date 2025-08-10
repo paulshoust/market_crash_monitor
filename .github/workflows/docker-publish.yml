@@ -45,7 +45,8 @@ jobs:
       - name: Show tags we will build/push
         run: |
           echo "IMAGE_NAME=${{ env.IMAGE_NAME }}"
-          printf "%s" "${{ steps.meta.outputs.tags }}"
+          printf "%s
+" "${{ steps.meta.outputs.tags }}"
 
       # Build a local amd64 image and load into the runner for smoke testing
       - name: Build (local amd64, load)
@@ -127,6 +128,8 @@ jobs:
               if [ -n "${PORTFOLIO_VALUE:-}" ]; then
                 echo "PORTFOLIO_VALUE=${PORTFOLIO_VALUE}"
               fi
+              # Ensure Compose substitution works when image is parameterized
+              echo "IMAGE_NAME=docker.io/paulsh1988/market_crash_monitor:latest"
               echo "CRASH_DASHBOARD_DATA_DIR=/data"
               echo "DATA_DIR=/data"
               echo "TZ=${TZ}"

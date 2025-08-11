@@ -88,9 +88,9 @@ jobs:
         uses: appleboy/ssh-action@v1.2.0
         env:
           # required secrets (must be set in repo -> Settings -> Secrets -> Actions)
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_MARKET_MONITOR }}
-          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID_MARKET_MONITOR }}
-          FRED_API_KEY:       ${{ secrets.FRED_API_KEY_MARKET_MONITOR }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          FRED_API_KEY:       ${{ secrets.FRED_API_KEY }}
           OPENAI_API_KEY:     ${{ secrets.OPENAI_API_KEY_MARKET_MONITOR }}
 
           # optional secrets/vars

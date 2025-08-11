@@ -87,9 +87,9 @@ jobs:
       - name: Write .env from secrets + deploy (server already has compose file)
         uses: appleboy/ssh-action@v1.2.0
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_MARKET_MONITOR }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID_MARKET_MONITOR }}
-          FRED_API_KEY: ${{ secrets.FRED_API_KEY_MARKET_MONITOR }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY_MARKET_MONITOR }}
           PORTFOLIO_VALUE: ${{ secrets.PORTFOLIO_VALUE_MARKET_MONITOR }}
           ALERT_SEND_POLICY: ${{ secrets.ALERT_SEND_POLICY_MARKET_MONITOR }}
@@ -103,6 +103,8 @@ jobs:
           envs: TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,FRED_API_KEY,OPENAI_API_KEY,PORTFOLIO_VALUE,ALERT_SEND_POLICY,SCHEDULE_CRON,TZ,DEPLOY_DIR
           script: |
             set -euo pipefail
+            [ -z "${TELEGRAM_BOT_TOKEN:-}" ] && { echo "ERROR: TELEGRAM_BOT_TOKEN is empty"; exit 1; }
+            [ -z "${FRED_API_KEY:-}" ] && { echo "ERROR: FRED_API_KEY is empty"; exit 1; }
 
             echo "Using DEPLOY_DIR=$DEPLOY_DIR"
             if [ ! -d "$DEPLOY_DIR" ] || [ ! -f "$DEPLOY_DIR/docker-compose.yml" ]; then

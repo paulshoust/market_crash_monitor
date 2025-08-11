@@ -45,7 +45,8 @@ jobs:
       - name: Show tags we will build/push
         run: |
           echo "IMAGE_NAME=${{ env.IMAGE_NAME }}"
-          printf "%s" "${{ steps.meta.outputs.tags }}"
+          printf "%s
+" "${{ steps.meta.outputs.tags }}"
 
       # Build a local amd64 image and load into the runner for smoke testing
       - name: Build (local amd64, load)
@@ -148,6 +149,24 @@ jobs:
               DC="docker-compose"
             fi
 
+            # Determine compose command
+            if docker compose version >/dev/null 2>&1; then
+              DC="docker compose"
+            else
+              DC="docker-compose"
+            fi
+
+            # Pull latest image first
             $DC pull
+
+            # Stop & remove existing container to ensure clean recreate
+            echo "Stopping/removing existing 'market-crash-monitor' container (if running)..."
+            docker rm -f market-crash-monitor >/dev/null 2>&1 || true
+
+            # Recreate stack
             $DC up -d
             $DC ps
+
+            # Prune dangling images to reclaim space (safe: dangling only)
+            echo "Pruning dangling images..."
+            docker image prune -f

@@ -84,90 +84,110 @@ jobs:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
     steps:
-      - name: Write .env from secrets + deploy (server already has compose file)
+      - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.0
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY_MARKET_MONITOR }}
-          PORTFOLIO_VALUE: ${{ secrets.PORTFOLIO_VALUE_MARKET_MONITOR }}
-          ALERT_SEND_POLICY: ${{ secrets.ALERT_SEND_POLICY_MARKET_MONITOR }}
-          SCHEDULE_CRON: "0 17 * * 1"        # Mondays 17:00 Europe/Madrid
+          # required secrets (must be set in repo -> Settings -> Secrets -> Actions)
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_MARKET_MONITOR }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID_MARKET_MONITOR }}
+          FRED_API_KEY:       ${{ secrets.FRED_API_KEY_MARKET_MONITOR }}
+          OPENAI_API_KEY:     ${{ secrets.OPENAI_API_KEY_MARKET_MONITOR }}
+
+          # optional secrets/vars
+          PORTFOLIO_VALUE:    ${{ secrets.PORTFOLIO_VALUE_MARKET_MONITOR }}
+          ALERT_SEND_POLICY:  ${{ secrets.ALERT_SEND_POLICY_MARKET_MONITOR }} # usually "smart"
+          SERVER_USER:        ${{ secrets.SERVER_USER }}
+          SERVER_HOST:        ${{ secrets.SERVER_HOST }}
+          SSH_KEY:            ${{ secrets.SSH_KEY }}
+
+          # runtime knobs (quoted to keep cron spaces intact)
           TZ: "Europe/Madrid"
+          SCHEDULE_CRON: "0 */6 * * *"   # every 6 hours
+          WEEKLY_CRON:   "0 17 * * 1"    # Monday 17:00
+          WEEKLY_DAY: "0"                # Monday for legacy should_send weekly gate
+          HEALTH_MAX_AGE_MIN: "390"      # > 6.5h -> avoids false unhealthy
+          ALERT_CHANNELS: "telegram,stdout"
+          LLM_SUMMARY: "true"
+          IMAGE_NAME: "docker.io/paulsh1988/market_crash_monitor:latest"
           DEPLOY_DIR: "/home/${{ secrets.SERVER_USER }}/market_monitor"
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,FRED_API_KEY,OPENAI_API_KEY,PORTFOLIO_VALUE,ALERT_SEND_POLICY,SCHEDULE_CRON,TZ,DEPLOY_DIR
+          envs: TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,FRED_API_KEY,OPENAI_API_KEY,PORTFOLIO_VALUE,ALERT_SEND_POLICY,SCHEDULE_CRON,WEEKLY_CRON,WEEKLY_DAY,HEALTH_MAX_AGE_MIN,ALERT_CHANNELS,LLM_SUMMARY,TZ,IMAGE_NAME,DEPLOY_DIR
           script: |
             set -euo pipefail
-            [ -z "${TELEGRAM_BOT_TOKEN:-}" ] && { echo "ERROR: TELEGRAM_BOT_TOKEN is empty"; exit 1; }
-            [ -z "${FRED_API_KEY:-}" ] && { echo "ERROR: FRED_API_KEY is empty"; exit 1; }
 
             echo "Using DEPLOY_DIR=$DEPLOY_DIR"
-            if [ ! -d "$DEPLOY_DIR" ] || [ ! -f "$DEPLOY_DIR/docker-compose.yml" ]; then
-              echo "ERROR: $DEPLOY_DIR or docker-compose.yml missing on server" >&2
-              ls -la "$DEPLOY_DIR" || true
-              exit 1
-            fi
-
+            [ -d "$DEPLOY_DIR" ] && [ -f "$DEPLOY_DIR/docker-compose.yml" ] || { echo "ERROR: compose dir missing"; exit 1; }
             cd "$DEPLOY_DIR"
+
+            # ---- Fail fast if critical secrets are empty ----
+            [ -n "${TELEGRAM_BOT_TOKEN:-}" ] || { echo "ERROR: TELEGRAM_BOT_TOKEN is empty"; exit 1; }
+            [ -n "${TELEGRAM_CHAT_ID:-}"   ] || { echo "ERROR: TELEGRAM_CHAT_ID is empty"; exit 1; }
+            [ -n "${OPENAI_API_KEY:-}"     ] || { echo "ERROR: OPENAI_API_KEY is empty"; exit 1; }
+            [ -n "${FRED_API_KEY:-}"       ] || echo "WARN: FRED_API_KEY is empty (FRED series will be skipped)"
 
             umask 077
             TMP_ENV=".env.$$"
-            {
-              echo "ALERT_CHANNELS=telegram,stdout"
-              echo "ALERT_SEND_POLICY=${ALERT_SEND_POLICY:-smart}"
-              echo "WEEKLY_DAY=4"
-              echo "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}"
-              echo "TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}"
-              echo "FRED_API_KEY=${FRED_API_KEY}"
-              echo "LLM_SUMMARY=true"
-              echo "OPENAI_API_KEY=${OPENAI_API_KEY}"
-              if [ -n "${PORTFOLIO_VALUE:-}" ]; then
-                echo "PORTFOLIO_VALUE=${PORTFOLIO_VALUE}"
+
+            # helper to keep old non-empty values if new value is empty
+            keep_or_set () {
+              key="$1"; new="$2"
+              if [ -n "$new" ]; then
+                echo "$key=$new"
+              elif [ -f .env ] && grep -q "^$key=" .env; then
+                grep "^$key=" .env
+              else
+                echo "$key="
               fi
-              # Ensure Compose substitution works when image is parameterized
-              echo "IMAGE_NAME=docker.io/paulsh1988/market_crash_monitor:latest"
-              echo "CRASH_DASHBOARD_DATA_DIR=/data"
-              echo "DATA_DIR=/data"
+            }
+
+            {
+              echo "IMAGE_NAME=${IMAGE_NAME}"
               echo "TZ=${TZ}"
+              echo "DATA_DIR=/data"
+              echo "CRASH_DASHBOARD_DATA_DIR=/data"
+
+              # cadence & health
               echo "SCHEDULE_CRON=${SCHEDULE_CRON}"
-              echo "RUN_AT_START=0"
+              echo "WEEKLY_CRON=${WEEKLY_CRON}"
+              echo "WEEKLY_DAY=${WEEKLY_DAY}"
               echo "HEALTH_HTTP=1"
               echo "HEALTH_PORT=8087"
-              echo "HEALTH_MAX_AGE_MIN=180"
-            } > "${TMP_ENV}"
-            mv -f "${TMP_ENV}" .env
+              echo "HEALTH_MAX_AGE_MIN=${HEALTH_MAX_AGE_MIN}"
+              echo "RUN_AT_START=0"
 
-            mkdir -p data
+              # alerts & policy
+              echo "ALERT_CHANNELS=${ALERT_CHANNELS}"
+              keep_or_set ALERT_SEND_POLICY "${ALERT_SEND_POLICY:-smart}"
 
-            if docker compose version >/dev/null 2>&1; then
-              DC="docker compose"
-            else
-              DC="docker-compose"
-            fi
+              # LLM & tokens
+              echo "LLM_SUMMARY=${LLM_SUMMARY}"
+              keep_or_set OPENAI_API_KEY "${OPENAI_API_KEY}"
+              keep_or_set FRED_API_KEY "${FRED_API_KEY}"
+              keep_or_set TELEGRAM_BOT_TOKEN "${TELEGRAM_BOT_TOKEN}"
+              keep_or_set TELEGRAM_CHAT_ID "${TELEGRAM_CHAT_ID}"
 
-            # Determine compose command
-            if docker compose version >/dev/null 2>&1; then
-              DC="docker compose"
-            else
-              DC="docker-compose"
-            fi
+              # optional portfolio sizing
+              [ -n "${PORTFOLIO_VALUE:-}" ] && echo "PORTFOLIO_VALUE=${PORTFOLIO_VALUE}"
+            } > "$TMP_ENV"
 
-            # Pull latest image first
-            $DC pull
+            mv -f "$TMP_ENV" .env
+            echo "Wrote $(wc -c <.env) bytes into .env"
 
-            # Stop & remove existing container to ensure clean recreate
-            echo "Stopping/removing existing 'market-crash-monitor' container (if running)..."
+            # compose wrapper
+            DC="docker compose -f docker-compose.yml"
+
+            # Pull the new image tag (if using image) or build (if using build:)
+            $DC pull || true
+
+            echo "Stopping/removing existing container..."
             docker rm -f market-crash-monitor >/dev/null 2>&1 || true
 
-            # Recreate stack
+            echo "Recreating stack..."
             $DC up -d
             $DC ps
 
-            # Prune dangling images to reclaim space (safe: dangling only)
             echo "Pruning dangling images..."
             docker image prune -f

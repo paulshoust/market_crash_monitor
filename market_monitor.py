@@ -627,24 +627,75 @@ def _parse_weekday() -> int:
             return max(0, min(6, int(ch)))
     return 4
 
-def should_send(now: dt.datetime, policy: str, scores: ScoreBreakdown, ind: Indicators, raw: dict, state: dict) -> bool:
-    if policy == "always": return True
-    weekly_day = _parse_weekday()
+def should_send(
+    now: dt.datetime,
+    policy: str,
+    scores: ScoreBreakdown,
+    ind: Indicators,
+    raw: dict,
+    state: dict,
+) -> bool:
+    """
+    Decide whether to send an alert.
+
+    Modes:
+      - policy == "always": always send.
+      - policy == "smart": send if either
+          (A) it's the weekly summary window (Monday by default), OR
+          (B) a fast/significant change is detected in key risk indicators.
+
+    Overrides:
+      - If scheduler sets RUN_REASON=weekly, force-send (guarantees Monday 17:00 summary
+        even if 6h spacing doesn't land exactly on 17:00).
+    """
+    # 0) Explicit weekly override from the scheduler
+    if (os.getenv("RUN_REASON") or "").strip().lower() == "weekly":
+        return True
+
+    # 1) Simple mode
+    if policy == "always":
+        return True
+
+    # 2) Weekly summary day (defaults to Monday=0; configurable via WEEKLY_DAY)
+    weekly_day = _parse_weekday()  # keeps your existing env parsing
     last_sent = state.get("last_sent_ts")
     last_sent_day = None
     if last_sent:
-        try: last_sent_day = dt.datetime.fromisoformat(last_sent).date()
-        except Exception: pass
+        try:
+            last_sent_day = dt.datetime.fromisoformat(last_sent).date()
+        except Exception:
+            pass
     send_weekly = (now.weekday() == weekly_day) and (last_sent_day != now.date())
+
+    # 3) Fast-change detection (configurable thresholds with safe defaults)
+    #    Env vars let you tune sensitivity without code changes.
+    vix_jump  = float(os.getenv("FAST_VIX_JUMP",  "5.0"))   # points d/d
+    hy_6d     = float(os.getenv("FAST_HY_OAS_6D", "0.30"))  # abs % over ~1 week
+    dgs2_jump = float(os.getenv("FAST_DGS2_JUMP", "0.15"))  # abs % d/d
+    brink_d   = float(os.getenv("FAST_BRINK_DELTA", "3.0")) # brink points
+
     fast = False
-    V = raw["yahoo"].get("VIX", [])
-    if len(V) >= 2 and (V[-1][1] - V[-2][1]) >= 5.0: fast = True
-    H = raw["fred"].get("HY_OAS_US", [])
-    if len(H) >= 6 and (H[-1][1] - H[-6][1]) >= 0.30: fast = True
-    U2 = raw["fred"].get("DGS2", [])
-    if len(U2) >= 2 and (U2[-1][1] - U2[-2][1]) >= 0.15: fast = True
+
+    # VIX: large day-over-day volatility spikes
+    V = raw.get("yahoo", {}).get("VIX", [])
+    if len(V) >= 2 and (V[-1][1] - V[-2][1]) >= vix_jump:
+        fast = True
+
+    # HY OAS: credit spreads widening quickly in ~a week
+    H = raw.get("fred", {}).get("HY_OAS_US", [])
+    if len(H) >= 6 and (H[-1][1] - H[-6][1]) >= hy_6d:
+        fast = True
+
+    # 2Y yield: front-end rate shock day-over-day
+    U2 = raw.get("fred", {}).get("DGS2", [])
+    if len(U2) >= 2 and (U2[-1][1] - U2[-2][1]) >= dgs2_jump:
+        fast = True
+
+    # Composite “Brink” score: regime risk jumping materially
     prev_brink = state.get("brink")
-    if prev_brink is not None and abs(scores.brink - float(prev_brink)) >= 3.0: fast = True
+    if prev_brink is not None and abs(scores.brink - float(prev_brink)) >= brink_d:
+        fast = True
+
     return send_weekly or fast
 
 # -----------------------------

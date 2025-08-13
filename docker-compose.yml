@@ -1,20 +1,37 @@
 services:
   market-crash-monitor:
     image: ${IMAGE_NAME}
-
     container_name: market-crash-monitor
     restart: unless-stopped
+
+    # Read tokens & non-defaults from .env
     env_file: .env
+
+    # Force scheduler (not loop mode)
+    command: ["python", "-u", "/market_monitor/scheduler.py"]
+
     environment:
+      # Paths
       DATA_DIR: /data
-      TZ: Europe/Madrid
-      # Weekly Monday 17:00 Madrid (cron)
-      SCHEDULE_CRON: ${SCHEDULE_CRON:-0 17 * * 1}
-      RUN_AT_START: ${RUN_AT_START:-0}
+      CRASH_DASHBOARD_DATA_DIR: /data
+
+      # Time / cadence
+      TZ: ${TZ:-Europe/Madrid}
+      SCHEDULE_CRON: "${SCHEDULE_CRON:-0 */6 * * *}"   # every 6 hours
+      WEEKLY_CRON:   "${WEEKLY_CRON:-0 17 * * 1}"      # Monday 17:00
+      WEEKLY_DAY:    "${WEEKLY_DAY:-0}"                # Monday (legacy weekly gate)
+      RUN_AT_START:  ${RUN_AT_START:-0}
+
+      # Alerting policy (smart => only fast-change OR weekly summary)
+      ALERT_SEND_POLICY: "${ALERT_SEND_POLICY:-smart}"
+
+      # Health endpoint (HTTP) and window (> 6.5h so it stays healthy between runs)
       HEALTH_HTTP: ${HEALTH_HTTP:-1}
       HEALTH_PORT: ${HEALTH_PORT:-8087}
-      HEALTH_MAX_AGE_MIN: ${HEALTH_MAX_AGE_MIN:-180}
+      HEALTH_MAX_AGE_MIN: ${HEALTH_MAX_AGE_MIN:-390}
+
     volumes:
       - ./data:/data
+
     ports:
-      - "8087:8087"   # /healthz
+      - "8087:8087"   # / or /healthz

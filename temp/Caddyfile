@@ -1,0 +1,8 @@
+# /opt/wg-easy/Caddyfile
+{
+  email you@your-domain.com
+}
+
+51.105.241.203 {
+  reverse_proxy wg-easy:80
+}

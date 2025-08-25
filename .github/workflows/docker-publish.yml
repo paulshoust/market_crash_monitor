@@ -102,7 +102,7 @@ jobs:
 
           # runtime knobs (quoted to keep cron spaces intact)
           TZ: "Europe/Madrid"
-          SCHEDULE_CRON: "0 */6 * * *"   # every 6 hours
+          SCHEDULE_CRON: "0 17 * * *"   # every 6 hours
           WEEKLY_CRON:   "0 17 * * 1"    # Monday 17:00
           WEEKLY_DAY: "0"                # Monday for legacy should_send weekly gate
           HEALTH_MAX_AGE_MIN: "390"      # > 6.5h -> avoids false unhealthy

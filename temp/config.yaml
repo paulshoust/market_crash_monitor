@@ -1,0 +1,28 @@
+# Clash Meta-compatible minimal config for Hysteria2
+mixed-port: 7890
+allow-lan: true
+mode: Rule
+log-level: info
+
+proxies:
+  - name: "pavel1-IPv4"
+    type: hysteria2
+    server: 51.105.241.203
+    port: 443
+    auth: "pavel1:kXvwdXnTAM5mHhIHJVyk4u75zRO0pDyQ"
+    sni: access.researchdevelopment.online
+    skip-cert-verify: true
+    obfs: salamander
+    obfs-password: "dSEssBFkqICqwmVgBpurgGRHaW4K718m"
+    alpn: ["h3"]
+    udp: true
+
+proxy-groups:
+  - name: "Proxy"
+    type: select
+    proxies:
+      - "pavel1-IPv4"
+      - "DIRECT"
+
+rules:
+  - MATCH,Proxy
